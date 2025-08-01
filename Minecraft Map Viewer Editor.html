@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minecraft Map Viewer/Editor</title>
+    <!-- Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #1a202c; /* Dark background */
+            color: #e2e8f0; /* Light text color */
+        }
+        canvas {
+            border-radius: 0.5rem;
+            background-color: #2d3748;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            touch-action: none; /* Prevent default browser gestures */
+        }
+        .tooltip {
+            visibility: hidden;
+            background-color: #4a5568;
+            color: #fff;
+            text-align: center;
+            border-radius: 6px;
+            padding: 5px 10px;
+            position: absolute;
+            z-index: 100;
+            white-space: nowrap;
+            transition: opacity 0.2s;
+            opacity: 0;
+            pointer-events: none;
+        }
+        .tooltip.visible {
+            visibility: visible;
+            opacity: 1;
+        }
+    </style>
+</head>
+<body class="p-4 flex flex-col items-center justify-center min-h-screen">
+
+    <div class="container max-w-5xl w-full p-6 bg-gray-800 rounded-xl shadow-2xl space-y-6">
+        <h1 class="text-3xl font-bold text-center text-teal-400">Minecraft Map Viewer</h1>
+        <p class="text-center text-gray-400">Load a map file, view different layers, and edit blocks.</p>
+
+        <!-- UI Controls and Information Panel -->
+        <div class="flex flex-col md:flex-row gap-6">
+
+            <!-- Controls Panel -->
+            <div class="flex-1 p-4 bg-gray-700 rounded-lg shadow-inner flex flex-col gap-4">
+                <div class="space-y-2">
+                    <label for="fileInput" class="block text-sm font-medium text-gray-300">Load Map (JSON)</label>
+                    <input type="file" id="fileInput" accept=".json" class="block w-full text-sm text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-teal-500 file:text-white hover:file:bg-teal-600 transition-colors cursor-pointer">
+                    <p class="text-xs text-gray-500 mt-1">Accepts a simplified JSON map format. See console for example.</p>
+                </div>
+
+                <div class="space-y-2">
+                    <label for="yLevelSlider" class="block text-sm font-medium text-gray-300">Y-Level: <span id="yLevelValue">64</span></label>
+                    <input type="range" id="yLevelSlider" min="0" max="127" value="64" class="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer">
+                </div>
+
+                <div class="space-y-2">
+                    <p class="text-sm font-medium text-gray-300">Map Info:</p>
+                    <div id="mapInfo" class="p-2 bg-gray-800 rounded-md text-sm">
+                        <p>Dimensions: <span id="mapDimensions">N/A</span></p>
+                        <p>Total Blocks: <span id="totalBlocks">N/A</span></p>
+                    </div>
+                </div>
+
+                <div class="flex flex-wrap gap-2 text-sm text-gray-400">
+                    <span class="p-1 px-2 rounded-full bg-blue-500/30 text-blue-300">Left-Click to edit</span>
+                    <span class="p-1 px-2 rounded-full bg-purple-500/30 text-purple-300">Hover for info</span>
+                </div>
+            </div>
+
+            <!-- Canvas and Block Info Panel -->
+            <div class="flex-1 flex flex-col items-center">
+                <canvas id="mapCanvas" width="512" height="512" class="w-full h-auto max-w-full"></canvas>
+                <div id="blockInfo" class="mt-4 p-4 bg-gray-700 rounded-lg shadow-inner w-full text-center">
+                    <p class="font-semibold text-gray-200">Hover over a block to see its details.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- The tooltip element, will be positioned with JS -->
+    <div id="tooltip" class="tooltip"></div>
+
+    <script>
+        // Use an immediately invoked function expression to prevent global scope pollution
+        (function() {
+            // =====================================================================
+            // == DOM ELEMENTS & INITIALIZATION ==
+            // =====================================================================
+            const fileInput = document.getElementById('fileInput');
+            const mapCanvas = document.getElementById('mapCanvas');
+            const yLevelSlider = document.getElementById('yLevelSlider');
+            const yLevelValueSpan = document.getElementById('yLevelValue');
+            const blockInfo = document.getElementById('blockInfo');
+            const mapDimensionsSpan = document.getElementById('mapDimensions');
+            const totalBlocksSpan = document.getElementById('totalBlocks');
+            const tooltip = document.getElementById('tooltip');
+
+            const ctx = mapCanvas.getContext('2d');
+            const canvasSize = 512;
+            let mapData = null;
+            let mapWidth = 0;
+            let mapHeight = 0;
+            let blockWidth = 0;
+
+            // =====================================================================
+            // == CONSTANTS & DATA ==
+            // =====================================================================
+            // Simplified block types and their corresponding colors for rendering
+            const blockTypes = ['air', 'stone', 'dirt', 'grass', 'water', 'wood'];
+            const blockColors = {
+                'air': 'rgba(0, 0, 0, 0.0)', // Transparent
+                'stone': '#808080',
+                'dirt': '#8B4513',
+                'grass': '#228B22',
+                'water': '#1E90FF',
+                'wood': '#A0522D'
+            };
+
+            // A simplified sample map in a 3D array [x][y][z]
+            const sampleMap = createSampleMap(64, 128, 64);
+            
+            // A helper function to create a basic sample map
+            function createSampleMap(width, height, depth) {
+                const map = [];
+                for (let x = 0; x < width; x++) {
+                    map[x] = [];
+                    for (let y = 0; y < height; y++) {
+                        map[x][y] = [];
+                        for (let z = 0; z < depth; z++) {
+                            // Simple logic to generate a terrain-like structure
+                            if (y < 60) {
+                                map[x][y][z] = 'stone';
+                            } else if (y < 63) {
+                                map[x][y][z] = 'dirt';
+                            } else if (y === 63) {
+                                map[x][y][z] = 'grass';
+                            } else if (y === 64 && Math.random() > 0.95) {
+                                map[x][y][z] = 'wood';
+                            } else if (y < 67 && Math.random() > 0.9) {
+                                map[x][y][z] = 'water';
+                            } else {
+                                map[x][y][z] = 'air';
+                            }
+                        }
+                    }
+                }
+                return map;
+            }
+
+            // =====================================================================
+            // == CORE FUNCTIONS ==
+            // =====================================================================
+
+            /**
+             * Initializes the application with the given map data.
+             * @param {Array} newMapData - The 3D array of block types.
+             */
+            function initializeMap(newMapData) {
+                mapData = newMapData;
+                mapWidth = newMapData.length;
+                mapHeight = newMapData[0].length;
+                let mapDepth = newMapData[0][0].length;
+                
+                // Adjust canvas to fit the larger of width or depth
+                const maxDim = Math.max(mapWidth, mapDepth);
+                blockWidth = canvasSize / maxDim;
+                
+                // Set slider max to the map's height
+                yLevelSlider.max = mapHeight - 1;
+                yLevelSlider.value = Math.min(64, mapHeight - 1);
+                yLevelValueSpan.textContent = yLevelSlider.value;
+                
+                // Update map info panel
+                mapDimensionsSpan.textContent = `${mapWidth}x${mapHeight}x${mapDepth}`;
+                totalBlocksSpan.textContent = (mapWidth * mapHeight * mapDepth).toLocaleString();
+
+                render();
+            }
+
+            /**
+             * Draws the current Y-level slice of the map on the canvas.
+             */
+            function render() {
+                if (!mapData) return;
+
+                const yLevel = parseInt(yLevelSlider.value, 10);
+                
+                // Clear the canvas
+                ctx.clearRect(0, 0, canvasSize, canvasSize);
+
+                for (let x = 0; x < mapWidth; x++) {
+                    for (let z = 0; z < mapData[0][yLevel].length; z++) {
+                        const blockType = mapData[x][yLevel][z];
+                        if (blockType !== 'air') {
+                            ctx.fillStyle = blockColors[blockType];
+                            ctx.fillRect(x * blockWidth, z * blockWidth, blockWidth, blockWidth);
+                            ctx.strokeStyle = '#222';
+                            ctx.strokeRect(x * blockWidth, z * blockWidth, blockWidth, blockWidth);
+                        }
+                    }
+                }
+            }
+            
+            /**
+             * Calculates the grid coordinates from the mouse position.
+             * @param {Event} event - The mouse event.
+             * @returns {object|null} The {x, y, z} coordinates or null if out of bounds.
+             */
+            function getGridCoordinates(event) {
+                const rect = mapCanvas.getBoundingClientRect();
+                const scaleX = mapCanvas.width / rect.width;
+                const scaleY = mapCanvas.height / rect.height;
+
+                const canvasX = (event.clientX - rect.left) * scaleX;
+                const canvasY = (event.clientY - rect.top) * scaleY;
+
+                const gridX = Math.floor(canvasX / blockWidth);
+                const gridZ = Math.floor(canvasY / blockWidth);
+                const yLevel = parseInt(yLevelSlider.value, 10);
+
+                if (gridX >= 0 && gridX < mapWidth && gridZ >= 0 && gridZ < mapData[0][0].length) {
+                    return { x: gridX, y: yLevel, z: gridZ };
+                }
+                return null;
+            }
+
+            /**
+             * Updates the block info panel with details of the hovered block.
+             * @param {object|null} coords - The {x, y, z} coordinates.
+             */
+            function updateBlockInfo(coords) {
+                if (coords && mapData) {
+                    const blockType = mapData[coords.x][coords.y][coords.z];
+                    blockInfo.innerHTML = `
+                        <p class="font-semibold text-gray-200">Block Type: <span class="text-teal-400">${blockType}</span></p>
+                        <p>Coordinates: <span class="text-gray-400">(${coords.x}, ${coords.y}, ${coords.z})</span></p>
+                    `;
+                } else {
+                    blockInfo.innerHTML = '<p class="font-semibold text-gray-200">Hover over a block to see its details.</p>';
+                }
+            }
+
+            /**
+             * Updates and shows the tooltip with block information.
+             * @param {Event} event - The mouse event.
+             * @param {object|null} coords - The {x, y, z} coordinates.
+             */
+            function updateTooltip(event, coords) {
+                if (coords && mapData) {
+                    const blockType = mapData[coords.x][coords.y][coords.z];
+                    tooltip.innerHTML = `
+                        <p>Type: ${blockType}</p>
+                        <p>Coords: (${coords.x}, ${coords.y}, ${coords.z})</p>
+                    `;
+                    
+                    // Position the tooltip
+                    tooltip.style.left = `${event.clientX + 15}px`;
+                    tooltip.style.top = `${event.clientY + 15}px`;
+                    tooltip.classList.add('visible');
+                } else {
+                    tooltip.classList.remove('visible');
+                }
+            }
+
+
+            // =====================================================================
+            // == EVENT LISTENERS ==
+            // =====================================================================
+
+            // Handle map file loading
+            fileInput.addEventListener('change', (event) => {
+                const file = event.target.files[0];
+                if (!file) {
+                    return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const newMapData = JSON.parse(e.target.result);
+                        if (newMapData && Array.isArray(newMapData) && newMapData.length > 0) {
+                            initializeMap(newMapData);
+                            alert("Map loaded successfully!");
+                        } else {
+                            alert("Invalid map file format. Please load a 3D array of block types.");
+                        }
+                    } catch (error) {
+                        alert("Error parsing map file: " + error.message);
+                    }
+                };
+                reader.readAsText(file);
+            });
+
+            // Handle Y-level slider changes
+            yLevelSlider.addEventListener('input', () => {
+                yLevelValueSpan.textContent = yLevelSlider.value;
+                render();
+            });
+
+            // Handle mouse movement for highlighting and info
+            mapCanvas.addEventListener('mousemove', (event) => {
+                const coords = getGridCoordinates(event);
+                if (coords) {
+                    updateBlockInfo(coords);
+                    updateTooltip(event, coords);
+                } else {
+                    updateBlockInfo(null);
+                    updateTooltip(event, null);
+                }
+            });
+
+            // Handle mouse leaving canvas to clear info
+            mapCanvas.addEventListener('mouseleave', () => {
+                updateBlockInfo(null);
+                updateTooltip(null, null);
+            });
+
+            // Handle left-click for editing blocks
+            mapCanvas.addEventListener('click', (event) => {
+                const coords = getGridCoordinates(event);
+                if (coords && mapData) {
+                    const currentType = mapData[coords.x][coords.y][coords.z];
+                    const currentIndex = blockTypes.indexOf(currentType);
+                    const nextIndex = (currentIndex + 1) % blockTypes.length;
+                    mapData[coords.x][coords.y][coords.z] = blockTypes[nextIndex];
+                    render();
+                    updateBlockInfo(coords); // Update info with new block type
+                }
+            });
+            
+            // =====================================================================
+            // == STARTUP ==
+            // =====================================================================
+            window.onload = function() {
+                 // Initialize with the sample map on page load
+                initializeMap(sampleMap);
+            };
+        })();
+    </script>
+</body>
+</html>
